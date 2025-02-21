@@ -1,36 +1,44 @@
 from .operations.merge_operations import MergeOperations
 from .operations.image_operations import ImageOperations
 from .operations.compression_operations import CompressionOperations
-from .operations.cleanup_operations import CleanupOperations
+from .operations.split_operations import SplitOperations
+from .operations.document_operations import DocumentOperations
 
-class PDFOperations(MergeOperations, ImageOperations, CompressionOperations, CleanupOperations):
-    """Main class combining all PDF operations
+class PDFOperations(MergeOperations, ImageOperations, CompressionOperations, SplitOperations, DocumentOperations):
+    """Main class for PDF operations
     
-    This class inherits from all operation classes to provide a unified interface
-    for all PDF-related operations. Each type of operation is organized in its own
-    module for better maintainability and readability.
-    
-    Available operations:
-    - Merging PDFs
-    - Converting PDF to images
-    - Converting images to PDF
-    - Compressing PDFs
-    - Cleaning up temporary files
+    This class combines all PDF operations into a single interface:
+    - Merge multiple PDFs into one
+    - Split PDF into multiple files
+    - Convert PDF to images
+    - Convert images to PDF
+    - Compress PDF files
+    - Convert PDF to Word
+    - Convert Word to PDF
     
     Example usage:
         # Merge PDFs
-        output_path = PDFOperations.merge_pdfs(['file1.pdf', 'file2.pdf'], 'merged.pdf')
+        merged_pdf = PDFOperations.merge_pdfs([pdf_data1, pdf_data2])
+        
+        # Split PDF
+        split_pdfs = PDFOperations.split_pdf(pdf_data, {'pages': [1, 3, 5]})
         
         # Convert PDF to images
-        image_paths = PDFOperations.pdf_to_images('input.pdf', 'output_dir', dpi=200)
+        image_buffers = PDFOperations.pdf_to_images(pdf_data, dpi=200)
+        
+        # Convert images to PDF
+        pdf_buffer = PDFOperations.images_to_pdf(image_data_list)
         
         # Compress PDF
-        result = PDFOperations.compress_pdf('input.pdf', 'compressed.pdf', quality='medium')
+        compressed_pdf = PDFOperations.compress_pdf(pdf_data, quality='medium')
         
-        # Clean up
-        PDFOperations.cleanup_temp_files([output_path])
+        # Convert PDF to Word
+        word_buffer = PDFOperations.pdf_to_word(pdf_data)
+        
+        # Convert Word to PDF
+        pdf_buffer = PDFOperations.word_to_pdf(word_data)
     """
-    pass  # All functionality is inherited from parent classes
+    pass
 
 # import os
 # from typing import List

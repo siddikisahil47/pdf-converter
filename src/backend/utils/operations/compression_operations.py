@@ -1,33 +1,40 @@
 from .config import *
+from typing import Union
+from io import BytesIO
 
 class CompressionOperations:
     @staticmethod
-    def compress_pdf(pdf_file: str, output_path: str, quality: str = "medium") -> dict:
+    def compress_pdf(pdf_data: Union[str, bytes, BytesIO], quality: str = "medium") -> BytesIO:
         """Compress PDF with different quality settings
         
         Args:
-            pdf_file: Input PDF file path
-            output_path: Output PDF file path
+            pdf_data: PDF data as file path, bytes, or BytesIO
             quality: Compression quality ('low', 'medium', or 'high')
             
         Returns:
-            dict containing compression information:
-            - output_path: Path to compressed PDF
-            - original_size: Original file size in bytes
-            - compressed_size: Compressed file size in bytes
-            - reduction_percentage: Size reduction percentage
+            BytesIO object containing the compressed PDF data
         """
         try:
-            # Get original size
-            original_size = os.path.getsize(pdf_file)
+            # Open PDF from various input types
+            if isinstance(pdf_data, str):
+                doc = fitz.open(pdf_data)
+                original_size = os.path.getsize(pdf_data)
+            elif isinstance(pdf_data, bytes):
+                doc = fitz.open(stream=pdf_data)
+                original_size = len(pdf_data)
+            elif isinstance(pdf_data, BytesIO):
+                doc = fitz.open(stream=pdf_data.getvalue())
+                original_size = get_buffer_size(pdf_data)
+            else:
+                raise ValueError("Invalid PDF input type")
             
-            def compress_with_params(doc, params, image_scale):
+            def compress_with_params(doc, params):
                 """Helper function to compress with parameters and check reduction"""
-                temp_output = output_path + ".temp"
-                doc.save(temp_output, **params)
-                temp_size = os.path.getsize(temp_output)
-                reduction = ((original_size - temp_size) / original_size) * 100
-                return temp_output, temp_size, reduction
+                output_buffer = BytesIO()
+                doc.save(output_buffer, **params)
+                compressed_size = get_buffer_size(output_buffer)
+                reduction = ((original_size - compressed_size) / original_size) * 100
+                return output_buffer, compressed_size, reduction
             
             # Base compression parameters
             base_params = {
@@ -60,11 +67,17 @@ class CompressionOperations:
             }
             
             settings = quality_settings[quality]
-            doc = fitz.open(pdf_file)
+            best_output = None
+            best_reduction = 0
             
             for scale in settings["scales"]:
                 # Reset document
-                doc = fitz.open(pdf_file)
+                if isinstance(pdf_data, str):
+                    doc = fitz.open(pdf_data)
+                elif isinstance(pdf_data, bytes):
+                    doc = fitz.open(stream=pdf_data)
+                else:
+                    doc = fitz.open(stream=pdf_data.getvalue())
                 
                 # Process images
                 for page in doc:
@@ -86,39 +99,34 @@ class CompressionOperations:
                         page.replace_image(xref, pixmap=pix)
                 
                 # Try compression
-                temp_output, compressed_size, reduction = compress_with_params(
-                    doc, settings["params"], scale
+                output_buffer, compressed_size, reduction = compress_with_params(
+                    doc, settings["params"]
                 )
+                
+                if reduction > best_reduction:
+                    best_reduction = reduction
+                    best_output = output_buffer
                 
                 # Check if we achieved target reduction
                 if reduction >= settings["target"] or \
                    (reduction >= settings["min_target"] and scale == settings["scales"][-1]):
                     break
             
-            # Finalize output
-            if os.path.exists(temp_output):
-                os.replace(temp_output, output_path)
-            else:
-                doc.save(output_path, **settings["params"])
-                compressed_size = os.path.getsize(output_path)
-                reduction = ((original_size - compressed_size) / original_size) * 100
+            # If no good compression was achieved, use basic compression
+            if not best_output:
+                best_output, compressed_size, reduction = compress_with_params(doc, settings["params"])
             
             doc.close()
             
-            result = {
-                "output_path": output_path,
-                "original_size": original_size,
-                "compressed_size": compressed_size,
-                "reduction_percentage": round(reduction, 2)
-            }
-            
+            # Log compression results
             logger.info(
                 f"Compression complete: Original size: {format_size(original_size)}, "
-                f"Compressed size: {format_size(compressed_size)}, "
-                f"Reduction: {result['reduction_percentage']}%"
+                f"Compressed size: {format_size(get_buffer_size(best_output))}, "
+                f"Reduction: {best_reduction:.2f}%"
             )
             
-            return result
+            best_output.seek(0)
+            return best_output
             
         except Exception as e:
             logger.error(f"Error compressing PDF: {str(e)}")

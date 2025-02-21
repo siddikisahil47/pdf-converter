@@ -1,10 +1,13 @@
 import os
 import logging
-from typing import List
+from typing import List, Union
+from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 from PyPDF2 import PdfReader, PdfWriter, PdfMerger
 import shutil
+import docx2pdf
+import pdf2docx
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,4 +24,12 @@ def format_size(size_in_bytes: int) -> str:
         if size_in_bytes < 1024:
             return f"{size_in_bytes:.2f} {unit}"
         size_in_bytes /= 1024
-    return f"{size_in_bytes:.2f} GB" 
+    return f"{size_in_bytes:.2f} GB"
+
+def get_buffer_size(buffer: BytesIO) -> int:
+    """Get the size of a BytesIO buffer"""
+    current_pos = buffer.tell()
+    buffer.seek(0, 2)  # Seek to end
+    size = buffer.tell()
+    buffer.seek(current_pos)  # Restore position
+    return size 

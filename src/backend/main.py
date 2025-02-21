@@ -5,6 +5,8 @@ from werkzeug.utils import secure_filename
 import tempfile
 from .utils.pdf_operations import PDFOperations
 import logging
+from io import BytesIO
+import zipfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,55 +35,31 @@ def merge_pdfs():
     if not request.files.getlist("files"):
         return jsonify({"error": "No files uploaded"}), 400
         
-    temp_files = []
-    output_path = None
     try:
         files = request.files.getlist("files")
         
-        # Validate and save uploaded files
+        # Validate files
         for file in files:
             if not file.filename.lower().endswith('.pdf'):
                 return jsonify({"error": "Only PDF files are allowed"}), 400
-                
-            temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-            file.save(temp_path)
-            temp_files.append(temp_path)
-            logger.info(f"Saved temporary file: {temp_path}")
-
-        # Create output path
-        output_path = os.path.join(TEMP_DIR, "merged.pdf")
+        
+        # Get PDF data from files
+        pdf_data_list = [file.read() for file in files]
         
         # Merge PDFs
-        PDFOperations.merge_pdfs(temp_files, output_path)
-        logger.info(f"Created merged PDF at: {output_path}")
+        merged_pdf = PDFOperations.merge_pdfs(pdf_data_list)
+        logger.info("Created merged PDF in memory")
         
-        # Verify file exists
-        if not os.path.exists(output_path):
-            raise ValueError(f"Failed to create merged PDF at {output_path}")
-            
-        # Send file
-        try:
-            response = send_file(
-                output_path,
-                mimetype='application/pdf',
-                as_attachment=True,
-                download_name="merged.pdf"
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error sending file {output_path}: {str(e)}")
-            raise
+        return send_file(
+            merged_pdf,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name="merged.pdf"
+        )
             
     except Exception as e:
         logger.error(f"Error in merge_pdfs: {str(e)}")
         return handle_error(e)
-    finally:
-        # Cleanup temporary files
-        PDFOperations.cleanup_temp_files(temp_files)
-        if output_path and os.path.exists(output_path):
-            PDFOperations.cleanup_temp_files([output_path])
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/split-pdf", methods=["POST"])
 def split_pdf():
@@ -92,14 +70,9 @@ def split_pdf():
     if not file.filename.lower().endswith('.pdf'):
         return jsonify({"error": "Only PDF files are allowed"}), 400
     
-    temp_path = None
-    output_dir = None
-    zip_path = None
     try:
-        temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-        file.save(temp_path)
-        output_dir = os.path.join(TEMP_DIR, "split")
-        os.makedirs(output_dir, exist_ok=True)
+        # Get PDF data
+        pdf_data = file.read()
         
         # Get splitting options from the request
         split_options = {}
@@ -143,23 +116,25 @@ def split_pdf():
             except ValueError:
                 return jsonify({"error": "Invalid number for last pages"}), 400
         
-        output_files = PDFOperations.split_pdf(temp_path, output_dir, split_options if split_options else None)
+        # Split PDF and get list of BytesIO buffers
+        split_pdfs = PDFOperations.split_pdf(pdf_data, split_options if split_options else None)
         
-        # Create a zip file containing all split PDFs
-        zip_path = os.path.join(TEMP_DIR, "split_pages.zip")
-        shutil.make_archive(zip_path[:-4], 'zip', output_dir)
+        # Create a ZIP file in memory
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for i, pdf_buffer in enumerate(split_pdfs, 1):
+                zf.writestr(f"page_{i}.pdf", pdf_buffer.getvalue())
         
-        return send_file(zip_path, as_attachment=True, download_name="split_pages.zip")
+        zip_buffer.seek(0)
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name="split_pages.zip"
+        )
+        
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files and directories
-        cleanup_files = [f for f in [temp_path, zip_path] if f and os.path.exists(f)]
-        PDFOperations.cleanup_temp_files(cleanup_files)
-        if output_dir and os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/pdf-to-images", methods=["POST"])
 def pdf_to_images():
@@ -170,15 +145,8 @@ def pdf_to_images():
     if not file.filename.lower().endswith('.pdf'):
         return jsonify({"error": "Only PDF files are allowed"}), 400
         
-    temp_path = None
-    output_dir = None
-    zip_path = None
     try:
-        temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-        file.save(temp_path)
-        output_dir = os.path.join(TEMP_DIR, "images")
-        os.makedirs(output_dir, exist_ok=True)
-        
+        # Get DPI setting
         try:
             dpi = int(request.form.get("dpi", 200))
             if dpi < 72 or dpi > 600:
@@ -186,54 +154,52 @@ def pdf_to_images():
         except ValueError:
             return jsonify({"error": "Invalid DPI value"}), 400
         
-        output_files = PDFOperations.pdf_to_images(temp_path, output_dir, dpi)
+        # Convert PDF to images (returns list of BytesIO buffers)
+        image_buffers = PDFOperations.pdf_to_images(file.read(), dpi=dpi)
         
-        # Create a zip file containing all images
-        zip_path = os.path.join(TEMP_DIR, "pdf_images.zip")
-        shutil.make_archive(zip_path[:-4], 'zip', output_dir)
+        # Create a ZIP file in memory
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for i, img_buffer in enumerate(image_buffers, 1):
+                zf.writestr(f"page_{i}.png", img_buffer.getvalue())
         
-        return send_file(zip_path, as_attachment=True, download_name="pdf_images.zip")
+        zip_buffer.seek(0)
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name="pdf_images.zip"
+        )
+        
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files and directories
-        cleanup_files = [f for f in [temp_path, zip_path] if f and os.path.exists(f)]
-        PDFOperations.cleanup_temp_files(cleanup_files)
-        if output_dir and os.path.exists(output_dir):
-            shutil.rmtree(output_dir)
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/images-to-pdf", methods=["POST"])
 def images_to_pdf():
     if not request.files.getlist("files"):
         return jsonify({"error": "No files uploaded"}), 400
         
-    temp_files = []
-    output_path = None
     try:
         files = request.files.getlist("files")
+        image_data = []
+        
         for file in files:
             if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                 return jsonify({"error": "Only PNG and JPG images are allowed"}), 400
-                
-            temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-            file.save(temp_path)
-            temp_files.append(temp_path)
-            
-        output_path = os.path.join(TEMP_DIR, "combined.pdf")
-        PDFOperations.images_to_pdf(temp_files, output_path)
+            image_data.append(file.read())
         
-        return send_file(output_path, as_attachment=True, download_name="combined.pdf")
+        # Convert images to PDF (returns BytesIO buffer)
+        pdf_buffer = PDFOperations.images_to_pdf(image_data)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name="combined.pdf"
+        )
+        
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files
-        PDFOperations.cleanup_temp_files(temp_files)
-        if output_path and os.path.exists(output_path):
-            PDFOperations.cleanup_temp_files([output_path])
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/compress-pdf", methods=["POST"])
 def compress_pdf():
@@ -248,47 +214,35 @@ def compress_pdf():
     if quality not in ["low", "medium", "high"]:
         return jsonify({"error": "Invalid quality value"}), 400
         
-    temp_path = None
-    output_path = None
     try:
-        temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-        file.save(temp_path)
-        output_path = os.path.join(TEMP_DIR, "compressed.pdf")
+        # Get PDF data
+        pdf_data = file.read()
         
-        # Get compression result with size information
-        result = PDFOperations.compress_pdf(temp_path, output_path, quality)
+        # Compress PDF
+        compressed_pdf = PDFOperations.compress_pdf(pdf_data, quality)
         
-        # Format sizes for display
-        def format_size(size_in_bytes):
-            for unit in ['B', 'KB', 'MB', 'GB']:
-                if size_in_bytes < 1024:
-                    return f"{size_in_bytes:.2f} {unit}"
-                size_in_bytes /= 1024
-            return f"{size_in_bytes:.2f} GB"
+        # Get sizes for response headers
+        original_size = len(pdf_data)
+        compressed_size = get_buffer_size(compressed_pdf)
+        reduction_percentage = round(((original_size - compressed_size) / original_size) * 100, 2)
         
-        # Create response with compression info
+        # Create response
         response = send_file(
-            result['output_path'],
+            compressed_pdf,
             as_attachment=True,
             download_name="compressed.pdf",
             mimetype='application/pdf'
         )
         
         # Add compression info to response headers
-        response.headers['X-Original-Size'] = format_size(result['original_size'])
-        response.headers['X-Compressed-Size'] = format_size(result['compressed_size'])
-        response.headers['X-Reduction-Percentage'] = str(result['reduction_percentage'])
+        response.headers['X-Original-Size'] = format_size(original_size)
+        response.headers['X-Compressed-Size'] = format_size(compressed_size)
+        response.headers['X-Reduction-Percentage'] = str(reduction_percentage)
         
         return response
         
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files
-        cleanup_files = [f for f in [temp_path, output_path] if f and os.path.exists(f)]
-        PDFOperations.cleanup_temp_files(cleanup_files)
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/pdf-to-word", methods=["POST"])
 def pdf_to_word():
@@ -299,23 +253,21 @@ def pdf_to_word():
     if not file.filename.lower().endswith('.pdf'):
         return jsonify({"error": "Only PDF files are allowed"}), 400
         
-    temp_path = None
-    output_path = None
     try:
-        temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-        file.save(temp_path)
-        output_path = os.path.join(TEMP_DIR, "converted.docx")
-        PDFOperations.pdf_to_word(temp_path, output_path)
+        # Get PDF data
+        pdf_data = file.read()
         
-        return send_file(output_path, as_attachment=True, download_name="converted.docx")
+        # Convert to Word
+        word_doc = PDFOperations.pdf_to_word(pdf_data)
+        
+        return send_file(
+            word_doc,
+            as_attachment=True,
+            download_name="converted.docx",
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files
-        cleanup_files = [f for f in [temp_path, output_path] if f and os.path.exists(f)]
-        PDFOperations.cleanup_temp_files(cleanup_files)
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 @app.route("/word-to-pdf", methods=["POST"])
 def word_to_pdf():
@@ -326,23 +278,21 @@ def word_to_pdf():
     if not file.filename.lower().endswith('.docx'):
         return jsonify({"error": "Only DOCX files are allowed"}), 400
         
-    temp_path = None
-    output_path = None
     try:
-        temp_path = os.path.join(TEMP_DIR, secure_filename(file.filename))
-        file.save(temp_path)
-        output_path = os.path.join(TEMP_DIR, "converted.pdf")
-        PDFOperations.word_to_pdf(temp_path, output_path)
+        # Get Word document data
+        docx_data = file.read()
         
-        return send_file(output_path, as_attachment=True, download_name="converted.pdf")
+        # Convert to PDF
+        pdf_doc = PDFOperations.word_to_pdf(docx_data)
+        
+        return send_file(
+            pdf_doc,
+            as_attachment=True,
+            download_name="converted.pdf",
+            mimetype='application/pdf'
+        )
     except Exception as e:
         return handle_error(e)
-    finally:
-        # Cleanup temporary files
-        cleanup_files = [f for f in [temp_path, output_path] if f and os.path.exists(f)]
-        PDFOperations.cleanup_temp_files(cleanup_files)
-        # Clean up the entire temp directory periodically
-        PDFOperations.cleanup_temp_directory()
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)

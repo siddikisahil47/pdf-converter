@@ -2,28 +2,32 @@ from .config import *
 
 class ImageOperations:
     @staticmethod
-    def pdf_to_images(pdf_file: str, output_dir: str, dpi: int = 200) -> List[str]:
+    def pdf_to_images(pdf_data: Union[str, bytes, BytesIO], dpi: int = 200) -> List[BytesIO]:
         """Convert PDF pages to images with size optimization
         
         Args:
-            pdf_file: Input PDF file path
-            output_dir: Output directory for images
+            pdf_data: PDF data as file path, bytes, or BytesIO
             dpi: Resolution in dots per inch (default: 200)
             
         Returns:
-            List of paths to the generated image files
+            List of BytesIO objects containing the generated images
         """
         try:
-            # Create output directory
-            os.makedirs(output_dir, exist_ok=True)
-            
             # Calculate zoom factor
             zoom = dpi / 72  # standard PDF resolution is 72 DPI
             magnify = fitz.Matrix(zoom, zoom)
             
-            # Process PDF
-            doc = fitz.open(pdf_file)
-            output_files = []
+            # Open PDF from various input types
+            if isinstance(pdf_data, str):
+                doc = fitz.open(pdf_data)
+            elif isinstance(pdf_data, bytes):
+                doc = fitz.open(stream=pdf_data)
+            elif isinstance(pdf_data, BytesIO):
+                doc = fitz.open(stream=pdf_data.getvalue())
+            else:
+                raise ValueError("Invalid PDF input type")
+            
+            output_buffers = []
             
             for page_num in range(len(doc)):
                 page = doc[page_num]
@@ -38,39 +42,39 @@ class ImageOperations:
                     new_size = (int(img.width * ratio), int(img.height * ratio))
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
                 
-                # Save optimized image
-                output_path = os.path.join(output_dir, f"page_{page_num + 1}.png")
+                # Save to BytesIO buffer
+                img_buffer = BytesIO()
                 img.save(
-                    output_path,
+                    img_buffer,
                     "PNG",
                     optimize=True,
                     quality=85,
                     dpi=(dpi, dpi)
                 )
+                img_buffer.seek(0)
+                output_buffers.append(img_buffer)
                 
-                output_files.append(output_path)
-                logger.info(f"Converted page {page_num + 1} to image: {output_path}")
+                logger.info(f"Converted page {page_num + 1} to image")
             
             doc.close()
-            return output_files
+            return output_buffers
             
         except Exception as e:
             logger.error(f"Error converting PDF to images: {str(e)}")
             raise ValueError(f"Failed to convert PDF to images: {str(e)}")
 
     @staticmethod
-    def images_to_pdf(image_files: List[str], output_path: str) -> str:
+    def images_to_pdf(image_data: List[Union[str, bytes, BytesIO]]) -> BytesIO:
         """Convert images to PDF with size validation and optimization
         
         Args:
-            image_files: List of image file paths
-            output_path: Output PDF file path
+            image_data: List of image data (file paths, bytes, or BytesIO objects)
             
         Returns:
-            Path to the created PDF file
+            BytesIO object containing the PDF data
         """
-        if not image_files:
-            raise ValueError("No image files provided")
+        if not image_data:
+            raise ValueError("No image data provided")
             
         def resize_if_needed(img: Image.Image) -> Image.Image:
             """Resize image if it exceeds maximum dimensions"""
@@ -80,26 +84,40 @@ class ImageOperations:
                 return img.resize(new_size, Image.Resampling.LANCZOS)
             return img
         
+        def open_image(data: Union[str, bytes, BytesIO]) -> Image.Image:
+            """Open image from various input types"""
+            if isinstance(data, str):
+                return Image.open(data)
+            elif isinstance(data, bytes):
+                return Image.open(BytesIO(data))
+            elif isinstance(data, BytesIO):
+                return Image.open(data)
+            else:
+                raise ValueError("Invalid image input type")
+        
         try:
             # Process first image
-            first_image = Image.open(image_files[0])
+            first_image = open_image(image_data[0])
             if first_image.mode != 'RGB':
                 first_image = first_image.convert('RGB')
             first_image = resize_if_needed(first_image)
             
             # Process other images
             other_images = []
-            for image_path in image_files[1:]:
-                img = Image.open(image_path)
+            for img_data in image_data[1:]:
+                img = open_image(img_data)
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 img = resize_if_needed(img)
                 other_images.append(img)
             
-            # Save as PDF
-            first_image.save(output_path, "PDF", save_all=True, append_images=other_images)
-            logger.info(f"Successfully created PDF from {len(image_files)} images")
-            return output_path
+            # Save to BytesIO buffer
+            pdf_buffer = BytesIO()
+            first_image.save(pdf_buffer, "PDF", save_all=True, append_images=other_images)
+            pdf_buffer.seek(0)
+            
+            logger.info(f"Successfully created PDF from {len(image_data)} images")
+            return pdf_buffer
             
         except Exception as e:
             logger.error(f"Error converting images to PDF: {str(e)}")
