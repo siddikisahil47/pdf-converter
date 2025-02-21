@@ -7,6 +7,7 @@ from .utils.pdf_operations import PDFOperations
 import logging
 from io import BytesIO
 import zipfile
+from PyPDF2 import PdfReader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -292,6 +293,30 @@ def word_to_pdf():
             mimetype='application/pdf'
         )
     except Exception as e:
+        return handle_error(e)
+
+@app.route("/get-pdf-info", methods=["POST"])
+def get_pdf_info():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+        
+    file = request.files["file"]
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({"error": "Only PDF files are allowed"}), 400
+        
+    try:
+        # Read PDF data and get total pages
+        pdf_data = file.read()
+        pdf = PdfReader(BytesIO(pdf_data))
+        total_pages = len(pdf.pages)
+        
+        return jsonify({
+            "total_pages": total_pages,
+            "filename": file.filename
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting PDF info: {str(e)}")
         return handle_error(e)
 
 if __name__ == "__main__":
